@@ -23,6 +23,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"golang.org/x/net/context"
 )
 
 func configFromEnv() (cfg VSphereConfig, ok bool) {
@@ -81,4 +83,28 @@ func TestNewVSphere(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to construct/authenticate vSphere: %s", err)
 	}
+}
+
+func TestVSphereLogin(t *testing.T) {
+	cfg, ok := configFromEnv()
+	if !ok {
+		t.Skipf("No config found in environment")
+	}
+
+	// Create vSphere configuration object
+	vs, err := newVSphere(cfg)
+	if err != nil {
+		t.Fatalf("Failed to construct/authenticate vSphere: %s", err)
+	}
+
+	// Create context
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Create vSphere client
+	c, err := vsphereLogin(vs.cfg, ctx)
+	if err != nil {
+		t.Errorf("Failed to create vSpere client: %s", err)
+	}
+	defer c.Logout(ctx)
 }
