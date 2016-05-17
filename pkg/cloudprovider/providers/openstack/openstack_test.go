@@ -18,14 +18,15 @@ package openstack
 
 import (
 	"os"
-	"strings"
+	// "strings"
 	"testing"
 	"time"
 
-	"k8s.io/kubernetes/pkg/util/rand"
+	// "k8s.io/kubernetes/pkg/util/rand"
 
 	"github.com/rackspace/gophercloud"
 	"k8s.io/kubernetes/pkg/api"
+	"fmt"
 )
 
 const volumeAvailableStatus = "available"
@@ -60,57 +61,57 @@ func WaitForVolumeStatus(t *testing.T, os *OpenStack, volumeName string, status 
 	}
 }
 
-func TestReadConfig(t *testing.T) {
-	_, err := readConfig(nil)
-	if err == nil {
-		t.Errorf("Should fail when no config is provided: %s", err)
-	}
+// func TestReadConfig(t *testing.T) {
+// 	_, err := readConfig(nil)
+// 	if err == nil {
+// 		t.Errorf("Should fail when no config is provided: %s", err)
+// 	}
 
-	cfg, err := readConfig(strings.NewReader(`
-[Global]
-auth-url = http://auth.url
-username = user
-[LoadBalancer]
-create-monitor = yes
-monitor-delay = 1m
-monitor-timeout = 30s
-monitor-max-retries = 3
-`))
-	if err != nil {
-		t.Fatalf("Should succeed when a valid config is provided: %s", err)
-	}
-	if cfg.Global.AuthUrl != "http://auth.url" {
-		t.Errorf("incorrect authurl: %s", cfg.Global.AuthUrl)
-	}
+// 	cfg, err := readConfig(strings.NewReader(`
+// [Global]
+// auth-url = http://auth.url
+// username = user
+// [LoadBalancer]
+// create-monitor = yes
+// monitor-delay = 1m
+// monitor-timeout = 30s
+// monitor-max-retries = 3
+// `))
+// 	if err != nil {
+// 		t.Fatalf("Should succeed when a valid config is provided: %s", err)
+// 	}
+// 	if cfg.Global.AuthUrl != "http://auth.url" {
+// 		t.Errorf("incorrect authurl: %s", cfg.Global.AuthUrl)
+// 	}
 
-	if !cfg.LoadBalancer.CreateMonitor {
-		t.Errorf("incorrect lb.createmonitor: %t", cfg.LoadBalancer.CreateMonitor)
-	}
-	if cfg.LoadBalancer.MonitorDelay.Duration != 1*time.Minute {
-		t.Errorf("incorrect lb.monitordelay: %s", cfg.LoadBalancer.MonitorDelay)
-	}
-	if cfg.LoadBalancer.MonitorTimeout.Duration != 30*time.Second {
-		t.Errorf("incorrect lb.monitortimeout: %s", cfg.LoadBalancer.MonitorTimeout)
-	}
-	if cfg.LoadBalancer.MonitorMaxRetries != 3 {
-		t.Errorf("incorrect lb.monitormaxretries: %d", cfg.LoadBalancer.MonitorMaxRetries)
-	}
-}
+// 	if !cfg.LoadBalancer.CreateMonitor {
+// 		t.Errorf("incorrect lb.createmonitor: %t", cfg.LoadBalancer.CreateMonitor)
+// 	}
+// 	if cfg.LoadBalancer.MonitorDelay.Duration != 1*time.Minute {
+// 		t.Errorf("incorrect lb.monitordelay: %s", cfg.LoadBalancer.MonitorDelay)
+// 	}
+// 	if cfg.LoadBalancer.MonitorTimeout.Duration != 30*time.Second {
+// 		t.Errorf("incorrect lb.monitortimeout: %s", cfg.LoadBalancer.MonitorTimeout)
+// 	}
+// 	if cfg.LoadBalancer.MonitorMaxRetries != 3 {
+// 		t.Errorf("incorrect lb.monitormaxretries: %d", cfg.LoadBalancer.MonitorMaxRetries)
+// 	}
+// }
 
-func TestToAuthOptions(t *testing.T) {
-	cfg := Config{}
-	cfg.Global.Username = "user"
-	// etc.
+// func TestToAuthOptions(t *testing.T) {
+// 	cfg := Config{}
+// 	cfg.Global.Username = "user"
+// 	// etc.
 
-	ao := cfg.toAuthOptions()
+// 	ao := cfg.toAuthOptions()
 
-	if !ao.AllowReauth {
-		t.Errorf("Will need to be able to reauthenticate")
-	}
-	if ao.Username != cfg.Global.Username {
-		t.Errorf("Username %s != %s", ao.Username, cfg.Global.Username)
-	}
-}
+// 	if !ao.AllowReauth {
+// 		t.Errorf("Will need to be able to reauthenticate")
+// 	}
+// 	if ao.Username != cfg.Global.Username {
+// 		t.Errorf("Username %s != %s", ao.Username, cfg.Global.Username)
+// 	}
+// }
 
 // This allows acceptance testing against an existing OpenStack
 // install, using the standard OS_* OpenStack client environment
@@ -142,67 +143,102 @@ func configFromEnv() (cfg Config, ok bool) {
 	return
 }
 
-func TestNewOpenStack(t *testing.T) {
+// func TestNewOpenStack(t *testing.T) {
+// 	cfg, ok := configFromEnv()
+// 	if !ok {
+// 		t.Skipf("No config found in environment")
+// 	}
+
+// 	_, err := newOpenStack(cfg)
+// 	if err != nil {
+// 		t.Fatalf("Failed to construct/authenticate OpenStack: %s", err)
+// 	}
+// }
+
+// func TestInstances(t *testing.T) {
+// 	cfg, ok := configFromEnv()
+// 	if !ok {
+// 		t.Skipf("No config found in environment")
+// 	}
+
+// 	os, err := newOpenStack(cfg)
+// 	if err != nil {
+// 		t.Fatalf("Failed to construct/authenticate OpenStack: %s", err)
+// 	}
+
+// 	i, ok := os.Instances()
+// 	if !ok {
+// 		t.Fatalf("Instances() returned false")
+// 	}
+
+// 	srvs, err := i.List(".")
+// 	if err != nil {
+// 		t.Fatalf("Instances.List() failed: %s", err)
+// 	}
+// 	if len(srvs) == 0 {
+// 		t.Fatalf("Instances.List() returned zero servers")
+// 	}
+// 	t.Logf("Found servers (%d): %s\n", len(srvs), srvs)
+
+// 	srvExternalId, err := i.ExternalID(srvs[0])
+// 	if err != nil {
+// 		t.Fatalf("Instances.ExternalId(%s) failed: %s", srvs[0], err)
+// 	}
+// 	t.Logf("Found server (%s), with external id: %s\n", srvs[0], srvExternalId)
+
+// 	srvInstanceId, err := i.InstanceID(srvs[0])
+// 	if err != nil {
+// 		t.Fatalf("Instance.InstanceId(%s) failed: %s", srvs[0], err)
+// 	}
+// 	t.Logf("Found server (%s), with instance id: %s\n", srvs[0], srvInstanceId)
+
+// 	addrs, err := i.NodeAddresses(srvs[0])
+// 	if err != nil {
+// 		t.Fatalf("Instances.NodeAddresses(%s) failed: %s", srvs[0], err)
+// 	}
+// 	t.Logf("Found NodeAddresses(%s) = %s\n", srvs[0], addrs)
+// }
+
+//func TestLoadBalancer(t *testing.T) {
+//	cfg, ok := configFromEnv()
+//	if !ok {
+//		t.Skipf("No config found in environment")
+//	}
+//
+//	cfg.LoadBalancer.LBVersion = "v2"
+//
+//	os, err := newOpenStack(cfg)
+//	if err != nil {
+//		t.Fatalf("Failed to construct/authenticate OpenStack: %s", err)
+//	}
+//
+//	lb, ok := os.LoadBalancer()
+//	if !ok {
+//		t.Fatalf("LoadBalancer() returned false - perhaps your stack doesn't support Neutron?")
+//	}
+//
+//	_, exists, err := lb.GetLoadBalancer(&api.Service{ObjectMeta: api.ObjectMeta{Name: "noexist"}})
+//	if err != nil {
+//		t.Fatalf("GetLoadBalancer(\"noexist\") returned error: %s", err)
+//	}
+//	if exists {
+//		t.Fatalf("GetLoadBalancer(\"noexist\") returned exists")
+//	}
+//}
+
+func TestLoadBalancerV2(t *testing.T) {
 	cfg, ok := configFromEnv()
 	if !ok {
 		t.Skipf("No config found in environment")
 	}
 
-	_, err := newOpenStack(cfg)
-	if err != nil {
-		t.Fatalf("Failed to construct/authenticate OpenStack: %s", err)
-	}
-}
-
-func TestInstances(t *testing.T) {
-	cfg, ok := configFromEnv()
-	if !ok {
-		t.Skipf("No config found in environment")
-	}
-
-	os, err := newOpenStack(cfg)
-	if err != nil {
-		t.Fatalf("Failed to construct/authenticate OpenStack: %s", err)
-	}
-
-	i, ok := os.Instances()
-	if !ok {
-		t.Fatalf("Instances() returned false")
-	}
-
-	srvs, err := i.List(".")
-	if err != nil {
-		t.Fatalf("Instances.List() failed: %s", err)
-	}
-	if len(srvs) == 0 {
-		t.Fatalf("Instances.List() returned zero servers")
-	}
-	t.Logf("Found servers (%d): %s\n", len(srvs), srvs)
-
-	srvExternalId, err := i.ExternalID(srvs[0])
-	if err != nil {
-		t.Fatalf("Instances.ExternalId(%s) failed: %s", srvs[0], err)
-	}
-	t.Logf("Found server (%s), with external id: %s\n", srvs[0], srvExternalId)
-
-	srvInstanceId, err := i.InstanceID(srvs[0])
-	if err != nil {
-		t.Fatalf("Instance.InstanceId(%s) failed: %s", srvs[0], err)
-	}
-	t.Logf("Found server (%s), with instance id: %s\n", srvs[0], srvInstanceId)
-
-	addrs, err := i.NodeAddresses(srvs[0])
-	if err != nil {
-		t.Fatalf("Instances.NodeAddresses(%s) failed: %s", srvs[0], err)
-	}
-	t.Logf("Found NodeAddresses(%s) = %s\n", srvs[0], addrs)
-}
-
-func TestLoadBalancer(t *testing.T) {
-	cfg, ok := configFromEnv()
-	if !ok {
-		t.Skipf("No config found in environment")
-	}
+	cfg.LoadBalancer.LBVersion = "v2"
+	cfg.LoadBalancer.SubnetId = "4db11a57-3530-49c1-a0fb-677862ca08b5"
+	cfg.LoadBalancer.CreateMonitor = true
+	cfg.LoadBalancer.FloatingNetworkId = "04bbbb5f-a8ca-42cf-86c4-13d9ba3319f1"
+	cfg.LoadBalancer.MonitorDelay = MyDuration{time.Duration(60*time.Second)}
+	cfg.LoadBalancer.MonitorTimeout = MyDuration{time.Duration(10*time.Second)}
+	cfg.LoadBalancer.MonitorMaxRetries = 5
 
 	os, err := newOpenStack(cfg)
 	if err != nil {
@@ -213,8 +249,30 @@ func TestLoadBalancer(t *testing.T) {
 	if !ok {
 		t.Fatalf("LoadBalancer() returned false - perhaps your stack doesn't support Neutron?")
 	}
+	
+	err = lb.EnsureLoadBalancerDeleted(&api.Service{ObjectMeta: api.ObjectMeta{Name: "tmp_newName"}})
+	if err != nil {
+		t.Fatalf("Failed to delete loadbalancer: %s", err)
+	}
 
-	_, exists, err := lb.GetLoadBalancer(&api.Service{ObjectMeta: api.ObjectMeta{Name: "noexist"}})
+	status, err := lb.EnsureLoadBalancer(&api.Service{ObjectMeta: api.ObjectMeta{Name: "tmp_newName"}}, []string{"vm1", "vm2", "vm3"}, map[string]string{})
+	if err != nil {
+		t.Fatalf("Failed to create loadbalancer: %s", err)
+	}
+	fmt.Println(status)
+
+	err = lb.UpdateLoadBalancer(&api.Service{ObjectMeta: api.ObjectMeta{Name: "tmp_newName"}}, []string{"vm4", "vm2", "vm5"})
+	if err != nil {
+		t.Fatalf("Failed to update loadbalancer: %s", err)
+	}
+	fmt.Println(status)
+
+	err = lb.EnsureLoadBalancerDeleted(&api.Service{ObjectMeta: api.ObjectMeta{Name: "tmp_newName"}})
+	if err != nil {
+		t.Fatalf("Failed to delete loadbalancer: %s", err)
+	}
+
+	_, exists, err := lb.GetLoadBalancer(&api.Service{ObjectMeta: api.ObjectMeta{Name: "tmp_newName"}})
 	if err != nil {
 		t.Fatalf("GetLoadBalancer(\"noexist\") returned error: %s", err)
 	}
@@ -246,48 +304,48 @@ func TestZones(t *testing.T) {
 	}
 }
 
-func TestVolumes(t *testing.T) {
-	cfg, ok := configFromEnv()
-	if !ok {
-		t.Skipf("No config found in environment")
-	}
+// func TestVolumes(t *testing.T) {
+// 	cfg, ok := configFromEnv()
+// 	if !ok {
+// 		t.Skipf("No config found in environment")
+// 	}
 
-	os, err := newOpenStack(cfg)
-	if err != nil {
-		t.Fatalf("Failed to construct/authenticate OpenStack: %s", err)
-	}
+// 	os, err := newOpenStack(cfg)
+// 	if err != nil {
+// 		t.Fatalf("Failed to construct/authenticate OpenStack: %s", err)
+// 	}
 
-	tags := map[string]string{
-		"test": "value",
-	}
-	vol, err := os.CreateVolume("kubernetes-test-volume-"+rand.String(10), 1, &tags)
-	if err != nil {
-		t.Fatalf("Cannot create a new Cinder volume: %v", err)
-	}
-	t.Logf("Volume (%s) created\n", vol)
+// 	tags := map[string]string{
+// 		"test": "value",
+// 	}
+// 	vol, err := os.CreateVolume("kubernetes-test-volume-"+rand.String(10), 1, &tags)
+// 	if err != nil {
+// 		t.Fatalf("Cannot create a new Cinder volume: %v", err)
+// 	}
+// 	t.Logf("Volume (%s) created\n", vol)
 
-	WaitForVolumeStatus(t, os, vol, volumeAvailableStatus, volumeCreateTimeoutSeconds)
+// 	WaitForVolumeStatus(t, os, vol, volumeAvailableStatus, volumeCreateTimeoutSeconds)
 
-	diskId, err := os.AttachDisk(os.localInstanceID, vol)
-	if err != nil {
-		t.Fatalf("Cannot AttachDisk Cinder volume %s: %v", vol, err)
-	}
-	t.Logf("Volume (%s) attached, disk ID: %s\n", vol, diskId)
+// 	diskId, err := os.AttachDisk(os.localInstanceID, vol)
+// 	if err != nil {
+// 		t.Fatalf("Cannot AttachDisk Cinder volume %s: %v", vol, err)
+// 	}
+// 	t.Logf("Volume (%s) attached, disk ID: %s\n", vol, diskId)
 
-	WaitForVolumeStatus(t, os, vol, volumeInUseStatus, volumeCreateTimeoutSeconds)
+// 	WaitForVolumeStatus(t, os, vol, volumeInUseStatus, volumeCreateTimeoutSeconds)
 
-	err = os.DetachDisk(os.localInstanceID, vol)
-	if err != nil {
-		t.Fatalf("Cannot DetachDisk Cinder volume %s: %v", vol, err)
-	}
-	t.Logf("Volume (%s) detached\n", vol)
+// 	err = os.DetachDisk(os.localInstanceID, vol)
+// 	if err != nil {
+// 		t.Fatalf("Cannot DetachDisk Cinder volume %s: %v", vol, err)
+// 	}
+// 	t.Logf("Volume (%s) detached\n", vol)
 
-	WaitForVolumeStatus(t, os, vol, volumeAvailableStatus, volumeCreateTimeoutSeconds)
+// 	WaitForVolumeStatus(t, os, vol, volumeAvailableStatus, volumeCreateTimeoutSeconds)
 
-	err = os.DeleteVolume(vol)
-	if err != nil {
-		t.Fatalf("Cannot delete Cinder volume %s: %v", vol, err)
-	}
-	t.Logf("Volume (%s) deleted\n", vol)
+// 	err = os.DeleteVolume(vol)
+// 	if err != nil {
+// 		t.Fatalf("Cannot delete Cinder volume %s: %v", vol, err)
+// 	}
+// 	t.Logf("Volume (%s) deleted\n", vol)
 
-}
+// }
