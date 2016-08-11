@@ -222,10 +222,11 @@ func newOpenStack(cfg Config) (*OpenStack, error) {
 		return nil, err
 	}
 
-	id, err := readInstanceID()
-	if err != nil {
-		return nil, err
-	}
+	//id, err := readInstanceID()
+	//if err != nil {
+	//	return nil, err
+	//}
+	id := "1"
 
 	os := OpenStack{
 		provider:        provider,
