@@ -56,6 +56,8 @@ type LbaasV2 struct {
 	LoadBalancer
 }
 
+type empty struct{}
+
 func networkExtensions(client *gophercloud.ServiceClient) (map[string]bool, error) {
 	seen := make(map[string]bool)
 
@@ -376,12 +378,13 @@ func (lbaas *LbaasV2) EnsureLoadBalancer(clusterName string, apiService *api.Ser
 		return nil, err
 	}
 
+	waitLoadbalancerActiveProvisioningStatus(lbaas.network, loadbalancer.ID)
+
 	for portIndex, port := range ports {
-		waitLoadbalancerActiveProvisioningStatus(lbaas.network, loadbalancer.ID)
 		listener, err := listeners.Create(lbaas.network, listeners.CreateOpts{
 			Name:           fmt.Sprintf("listener_%s_%d", name, portIndex),
 			Protocol:       listeners.Protocol(port.Protocol),
-			ProtocolPort:   (int)(port.Port),
+			ProtocolPort:   int(port.Port),
 			LoadbalancerID: loadbalancer.ID,
 		}).Extract()
 		if err != nil {
@@ -405,6 +408,8 @@ func (lbaas *LbaasV2) EnsureLoadBalancer(clusterName string, apiService *api.Ser
 			return nil, err
 		}
 
+		waitLoadbalancerActiveProvisioningStatus(lbaas.network, loadbalancer.ID)
+
 		for _, host := range hosts {
 			addr, err := getAddressByName(lbaas.compute, host)
 			if err != nil {
@@ -412,8 +417,6 @@ func (lbaas *LbaasV2) EnsureLoadBalancer(clusterName string, apiService *api.Ser
 				_ = lbaas.EnsureLoadBalancerDeleted(clusterName, apiService)
 				return nil, err
 			}
-
-			waitLoadbalancerActiveProvisioningStatus(lbaas.network, loadbalancer.ID)
 
 			_, err = v2_pools.CreateAssociateMember(lbaas.network, pool.ID, v2_pools.MemberCreateOpts{
 				ProtocolPort: int(port.NodePort),
@@ -425,11 +428,11 @@ func (lbaas *LbaasV2) EnsureLoadBalancer(clusterName string, apiService *api.Ser
 				_ = lbaas.EnsureLoadBalancerDeleted(clusterName, apiService)
 				return nil, err
 			}
+
+			waitLoadbalancerActiveProvisioningStatus(lbaas.network, loadbalancer.ID)
 		}
 
 		if lbaas.opts.CreateMonitor {
-			waitLoadbalancerActiveProvisioningStatus(lbaas.network, loadbalancer.ID)
-
 			_, err = v2_monitors.Create(lbaas.network, v2_monitors.CreateOpts{
 				PoolID:     pool.ID,
 				Type:       string(port.Protocol),
@@ -442,6 +445,7 @@ func (lbaas *LbaasV2) EnsureLoadBalancer(clusterName string, apiService *api.Ser
 				_ = lbaas.EnsureLoadBalancerDeleted(clusterName, apiService)
 				return nil, err
 			}
+			waitLoadbalancerActiveProvisioningStatus(lbaas.network, loadbalancer.ID)
 		}
 	}
 
@@ -491,13 +495,20 @@ func (lbaas *LbaasV2) UpdateLoadBalancer(clusterName string, service *api.Servic
 		return fmt.Errorf("Loadbalancer %s does not exist", loadBalancerName)
 	}
 
-	// Get all listeners for this loadbalancer
-	var listenersLists []listeners.Listener
+	// Get all listeners for this loadbalancer, by "port key".
+	type portKey struct {
+		Protocol string
+		Port     int
+	}
+	lbListeners := make(map[portKey]listeners.Listener)
 	err = listeners.List(lbaas.network, listeners.ListOpts{LoadbalancerID: loadbalancer.ID}).EachPage(func(page pagination.Page) (bool, error) {
 		listenersList, err := listeners.ExtractListeners(page)
-		listenersLists = append(listenersLists, listenersList...)
 		if err != nil {
 			return false, err
+		}
+		for _, l := range listenersList {
+			key := portKey{Protocol: l.Protocol, Port: l.ProtocolPort}
+			lbListeners[key] = l
 		}
 		return true, nil
 	})
@@ -505,13 +516,17 @@ func (lbaas *LbaasV2) UpdateLoadBalancer(clusterName string, service *api.Servic
 		return err
 	}
 
-	// Get all pools for this loadbalancer
-	var poolsLists []v2_pools.Pool
+	// Get all pools for this loadbalancer, by listener ID.
+	lbPools := make(map[string]v2_pools.Pool)
 	err = v2_pools.List(lbaas.network, v2_pools.ListOpts{LoadbalancerID: loadbalancer.ID}).EachPage(func(page pagination.Page) (bool, error) {
 		poolsList, err := v2_pools.ExtractPools(page)
-		poolsLists = append(poolsLists, poolsList...)
 		if err != nil {
 			return false, err
+		}
+		for _, p := range poolsList {
+			for _, l := range p.Listeners {
+				lbPools[l.ID] = p
+			}
 		}
 		return true, nil
 	})
@@ -520,87 +535,73 @@ func (lbaas *LbaasV2) UpdateLoadBalancer(clusterName string, service *api.Servic
 	}
 
 	// Compose Set of member (addresses) that _should_ exist
-	addrs := map[string]bool{}
+	addrs := map[string]empty{}
 	for _, host := range hosts {
 		addr, err := getAddressByName(lbaas.compute, host)
 		if err != nil {
 			return err
 		}
-		addrs[addr] = true
+		addrs[addr] = empty{}
 	}
 
-	// Remove members that are no longer required
-	for _, pool := range poolsLists {
+	// Check for adding/removing members associated with each port
+	for _, port := range ports {
+		// Get listener associated with this port
+		listener, ok := lbListeners[portKey{
+			Protocol: string(port.Protocol),
+			Port:     int(port.Port),
+		}]
+		if !ok {
+			return fmt.Errorf("Loadbalancer %s does not contain required listener for port %d and protocol %s", loadBalancerName, port.Port, port.Protocol)
+		}
+
+		// Get pool associated with this listener
+		pool, ok := lbPools[listener.ID]
+		if !ok {
+			return fmt.Errorf("Loadbalancer %s does not contain required pool for listener %s", loadBalancerName, listener.ID)
+		}
+
+		// Find existing pool members (by address) for this port
+		members := make(map[string]v2_pools.Member)
 		err := v2_pools.ListAssociateMembers(lbaas.network, pool.ID, v2_pools.MemberListOpts{}).EachPage(func(page pagination.Page) (bool, error) {
 			membersList, err := v2_pools.ExtractMembers(page)
 			if err != nil {
 				return false, err
 			}
 			for _, member := range membersList {
-				if _, found := addrs[member.Address]; found {
-					// Member already exists, remove from update list
-					addrs[member.Address] = false
-				} else {
-					// Member needs to be deleted
-					waitLoadbalancerActiveProvisioningStatus(lbaas.network, loadbalancer.ID)
-					err = v2_pools.DeleteMember(lbaas.network, pool.ID, member.ID).ExtractErr()
-					if err != nil {
-						return false, err
-					}
-					waitLoadbalancerActiveProvisioningStatus(lbaas.network, loadbalancer.ID)
-				}
+				members[member.Address] = member
 			}
 			return true, nil
 		})
 		if err != nil {
 			return err
 		}
-	}
 
-	// Add new members for each port in corresponding listener/pool
-	waitLoadbalancerActiveProvisioningStatus(lbaas.network, loadbalancer.ID)
-	for _, port := range ports {
-		// Find appropriate listener for this port
-		var listenerID string
-		for _, listener := range listenersLists {
-			if listener.ProtocolPort == int(port.Port) && listener.Protocol == string(port.Protocol) {
-				listenerID = listener.ID
-				break
-			}
-		}
-		if listenerID == "" {
-			return fmt.Errorf("Loadbalancer %s does not contain required listener for port %d and protocol %s", loadBalancerName, port.Port, port.Protocol)
-		}
-
-		// Find appropriate pool for found listener
-		var poolID string
-		for _, pool := range poolsLists {
-			for _, currentListener := range pool.Listeners {
-				if listenerID == currentListener.ID {
-					poolID = pool.ID
-					break
-				}
-			}
-			if poolID != "" {
-				break
-			}
-		}
-		if poolID == "" {
-			return fmt.Errorf("Loadbalancer %s does not contain required pool for listener %s", loadBalancerName, listenerID)
-		}
-
-		// Create a member for each new host
+		// Add any new members for this port
 		for addr := range addrs {
-			if !addrs[addr] {
-				// skip existing member
+			if _, ok := members[addr]; ok {
+				// Already exists, do not create member
 				continue
 			}
-			_, err := v2_pools.CreateAssociateMember(lbaas.network, poolID, v2_pools.MemberCreateOpts{
+			_, err := v2_pools.CreateAssociateMember(lbaas.network, pool.ID, v2_pools.MemberCreateOpts{
 				Address:      addr,
 				ProtocolPort: int(port.NodePort),
 				SubnetID:     lbaas.opts.SubnetId,
 			}).Extract()
 			if err != nil {
+				return err
+			}
+			waitLoadbalancerActiveProvisioningStatus(lbaas.network, loadbalancer.ID)
+		}
+
+		// Remove any old members for this port
+		for _, member := range members {
+			if _, ok := addrs[member.Address]; ok {
+				// Still present, do not delete member
+				continue
+			}
+			err = v2_pools.DeleteMember(lbaas.network, pool.ID, member.ID).ExtractErr()
+			if err != nil && !isNotFound(err) {
 				return err
 			}
 			waitLoadbalancerActiveProvisioningStatus(lbaas.network, loadbalancer.ID)
@@ -715,7 +716,6 @@ func (lbaas *LbaasV2) EnsureLoadBalancerDeleted(clusterName string, service *api
 		}
 	}
 
-	waitLoadbalancerActiveProvisioningStatus(lbaas.network, loadbalancer.ID)
 	// delete all monitors
 	for _, monitorID := range monitorIDs {
 		err := v2_monitors.Delete(lbaas.network, monitorID).ExtractErr()
@@ -788,7 +788,7 @@ func (lb *LbaasV1) EnsureLoadBalancer(clusterName string, apiService *api.Servic
 
 	ports := apiService.Spec.Ports
 	if len(ports) > 1 {
-		return nil, fmt.Errorf("multiple ports are not yet supported in openstack load balancers")
+		return nil, fmt.Errorf("multiple ports are not supported in openstack v1 load balancers")
 	} else if len(ports) == 0 {
 		return nil, fmt.Errorf("no ports provided to openstack load balancer")
 	}
@@ -857,7 +857,7 @@ func (lb *LbaasV1) EnsureLoadBalancer(clusterName string, apiService *api.Servic
 
 		_, err = members.Create(lb.network, members.CreateOpts{
 			PoolID:       pool.ID,
-			ProtocolPort: int(ports[0].NodePort), //TODO: need to handle multi-port
+			ProtocolPort: int(ports[0].NodePort), //Note: only handles single port
 			Address:      addr,
 		}).Extract()
 		if err != nil {
