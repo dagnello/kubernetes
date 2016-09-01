@@ -22,9 +22,11 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"os"
 	"os/exec"
 	"path"
 	"strings"
+	"time"
 
 	"github.com/vmware/govmomi"
 	"github.com/vmware/govmomi/find"
@@ -38,6 +40,7 @@ import (
 	"github.com/golang/glog"
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/cloudprovider"
+	"k8s.io/kubernetes/pkg/util/keymutex"
 	"k8s.io/kubernetes/pkg/util/runtime"
 )
 
@@ -52,6 +55,8 @@ const pvScsiControllerType = "pvscsi"
 const lsiLogicSasControllerType = "lsilogic-sas"
 const SCSIControllerLimit = 4
 const SCSIControllerDeviceLimit = 15
+const waitForAttachSeconds = 180
+const waitForDetachSeconds = 180
 
 // Controller types that are currently supported for hot attach of disks
 // lsilogic driver type is currently not supported because,when a device gets detached
@@ -59,6 +64,8 @@ const SCSIControllerDeviceLimit = 15
 // making the subsequent attaches to the node to fail.
 // TODO: Add support for lsilogic driver type
 var supportedSCSIControllerType = []string{"lsilogic-sas", "pvscsi"}
+var attachdetachMutex = keymutex.NewKeyMutex()
+
 
 var ErrNoDiskUUIDFound = errors.New("No disk UUID found")
 var ErrNoDiskIDFound = errors.New("No vSphere disk ID found")
@@ -513,6 +520,9 @@ func getVirtualMachineDevices(cfg *VSphereConfig, ctx context.Context, c *govmom
 
 //cleaning up the controller
 func cleanUpController(newSCSIController types.BaseVirtualDevice, vmDevices object.VirtualDeviceList, vm *object.VirtualMachine, ctx context.Context) error {
+	if newSCSIController == nil {
+		return nil
+	}
 	ctls := vmDevices.SelectByType(newSCSIController)
 	if len(ctls) < 1 {
 		return ErrNoDevicesFound
@@ -527,6 +537,15 @@ func cleanUpController(newSCSIController types.BaseVirtualDevice, vmDevices obje
 
 // Attaches given virtual disk volume to the compute running kubelet.
 func (vs *VSphere) AttachDisk(vmDiskPath string, nodeName string) (diskID string, diskUUID string, err error) {
+	// Find virtual machine to attach disk to
+	var vSphereInstance string
+	if nodeName == "" {
+		vSphereInstance = vs.localInstanceID
+	} else {
+		vSphereInstance = nodeName
+	}
+	attachdetachMutex.LockKey(vSphereInstance)
+
 	// Create context
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -537,14 +556,6 @@ func (vs *VSphere) AttachDisk(vmDiskPath string, nodeName string) (diskID string
 		return "", "", err
 	}
 	defer c.Logout(ctx)
-
-	// Find virtual machine to attach disk to
-	var vSphereInstance string
-	if nodeName == "" {
-		vSphereInstance = vs.localInstanceID
-	} else {
-		vSphereInstance = nodeName
-	}
 
 	// Get VM device list
 	vm, vmDevices, ds, err := getVirtualMachineDevices(vs.cfg, ctx, c, vSphereInstance)
@@ -579,7 +590,7 @@ func (vs *VSphere) AttachDisk(vmDiskPath string, nodeName string) (diskID string
 		configNewSCSIController.SharedBus = types.VirtualSCSISharing(types.VirtualSCSISharingNoSharing)
 
 		// add the scsi controller to virtual machine
-		err = vm.AddDevice(context.TODO(), newSCSIController)
+		err = vm.AddDevice(ctx, newSCSIController)
 		if err != nil {
 			glog.V(3).Infof("cannot add SCSI controller to vm - %v", err)
 			// attempt clean up of scsi controller
@@ -655,7 +666,51 @@ func (vs *VSphere) AttachDisk(vmDiskPath string, nodeName string) (diskID string
 		return "", "", err
 	}
 
-	return deviceName, diskUUID, nil
+	// wait for attach to complete
+
+
+	return deviceName, diskUUID, waitForAttach(vmDiskPath, time.Duration(waitForDetachSeconds * time.Second))
+}
+
+
+func waitForAttach(devicePath string, timeout time.Duration) error {
+	if devicePath == "" {
+		return fmt.Errorf("WaitForAttach failed for VMDK %q: devicePath is empty.", devicePath)
+	}
+
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			glog.V(5).Infof("Checking VMDK %q is attached", devicePath)
+			path, err := verifyDevicePath(devicePath)
+			if err != nil {
+				// Log error, if any, and continue checking periodically. See issue #11321
+				glog.Warningf("Error verifying VMDK (%q) is attached: %v", devicePath, err)
+			} else if path != "" {
+				// A device path has successfully been created for the VMDK
+				glog.Infof("Successfully found attached VMDK %q.", devicePath)
+				return nil
+			}
+		case <-timer.C:
+			return fmt.Errorf("Could not find attached VMDK %q. Timeout waiting for mount paths to be created.", devicePath)
+		}
+	}
+}
+
+func verifyDevicePath(path string) (string, error) {
+	if pathExists, err := pathExists(path); err != nil {
+		return "", fmt.Errorf("Error checking if path exists: %v", err)
+	} else if pathExists {
+		return path, nil
+	}
+
+	return "", nil
 }
 
 func getNextUnitNumber(devices object.VirtualDeviceList, c types.BaseVirtualController) (int32, error) {
@@ -760,6 +815,15 @@ func getVirtualDiskID(volPath string, vmDevices object.VirtualDeviceList) (strin
 
 // Detaches given virtual disk volume from the compute running kubelet.
 func (vs *VSphere) DetachDisk(volPath string, nodeName string) error {
+	// Find virtual machine to attach disk to
+	var vSphereInstance string
+	if nodeName == "" {
+		vSphereInstance = vs.localInstanceID
+	} else {
+		vSphereInstance = nodeName
+	}
+	attachdetachMutex.LockKey(vSphereInstance)
+
 	// Create context
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -770,14 +834,6 @@ func (vs *VSphere) DetachDisk(volPath string, nodeName string) error {
 		return err
 	}
 	defer c.Logout(ctx)
-
-	// Find VM to detach disk from
-	var vSphereInstance string
-	if nodeName == "" {
-		vSphereInstance = vs.localInstanceID
-	} else {
-		vSphereInstance = nodeName
-	}
 
 	vm, vmDevices, _, err := getVirtualMachineDevices(vs.cfg, ctx, c, vSphereInstance)
 	if err != nil {
@@ -801,7 +857,39 @@ func (vs *VSphere) DetachDisk(volPath string, nodeName string) error {
 		return err
 	}
 
-	return nil
+	return waitForDetach(volPath, time.Duration(waitForDetachSeconds * time.Second))
+}
+
+func waitForDetach(devicePath string, timeout time.Duration) error {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			glog.V(5).Infof("Checking device %q is detached.", devicePath)
+			if pathExists, err := pathExists(devicePath); err != nil {
+				return fmt.Errorf("Error checking if device path exists: %v", err)
+			} else if !pathExists {
+				return nil
+			}
+		case <-timer.C:
+			return fmt.Errorf("Timeout reached; Device %v is still attached", devicePath)
+		}
+	}
+}
+
+func pathExists(path string) (bool, error) {
+	_, err := os.Stat(path)
+	if err == nil {
+		return true, nil
+	} else if os.IsNotExist(err) {
+		return false, nil
+	} else {
+		return false, err
+	}
 }
 
 // Create a volume of given size (in KiB).
